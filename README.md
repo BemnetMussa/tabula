@@ -2,7 +2,15 @@
 
 Chess learned from the rules alone. Each generation plays the previous one. A new generation is kept only when it wins that match. The board lets you play any generation that earned its place.
 
-The contract for this phase is [prd/Tabula-PRD.md](prd/Tabula-PRD.md). Target: a demo that runs on this machine by 8 October 2026.
+The ten-day overview is [PLAN.md](PLAN.md). The pass/fail list is [prd/Tabula-PRD.md](prd/Tabula-PRD.md). Target: a demo on this machine by 8 October 2026.
+
+Play generation 0 (random legal moves, no weights yet):
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install python-chess
+PYTHONPATH=src .venv/bin/python -m tabula.play
+```
 
 ## Layout
 
