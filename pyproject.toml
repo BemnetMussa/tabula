@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tabula"
+version = "0.0.1"
+description = "Chess learned from the rules alone, by self-play."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy",
+  "python-chess",
+  "torch",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
