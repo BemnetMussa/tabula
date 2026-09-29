@@ -1,6 +1,6 @@
 # Tabula
 
-Chess learned from the rules alone. Each generation plays the previous one. A new generation is kept only when it wins that match. The board lets you play any generation that earned its place.
+The name is Latin for a blank slate. Tabula starts from scratch: the rules of chess, and no games people have already played. Each generation plays the previous one. A new generation is kept only when it wins that match. The board lets you play any generation that earned its place.
 
 The ten-day overview is [PLAN.md](PLAN.md). The pass/fail list is [prd/Tabula-PRD.md](prd/Tabula-PRD.md). Target: a demo on this machine by 8 October 2026.
 
