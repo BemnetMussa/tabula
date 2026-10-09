@@ -123,7 +123,9 @@ class MCTS:
         Helper to wrap the PyTorch model prediction. 
         Passes the board to TabulaNet, extracts the scalar Value, and maps the Policy back to legal moves.
         """
-        tensor_board = encoder.encode(board).unsqueeze(0) # Shape: (1, 13, 8, 8)
+        # encoder is the encode_board function which returns a numpy array
+        numpy_board = encoder(board)
+        tensor_board = torch.tensor(numpy_board).unsqueeze(0) # Shape: (1, 13, 8, 8)
         
         self.model.eval()
         with torch.no_grad():
