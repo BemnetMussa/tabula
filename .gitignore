@@ -17,3 +17,8 @@ data/
 *.pth
 *.ckpt
 *.onnx
+
+# Training Data
+data/
+*.pt
+*.pth
