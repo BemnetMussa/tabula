@@ -125,20 +125,37 @@ class MCTS:
         """
         # encoder is the encode_board function which returns a numpy array
         numpy_board = encoder(board)
-        tensor_board = torch.tensor(numpy_board).unsqueeze(0) # Shape: (1, 13, 8, 8)
+        # Find the device the model is on
+        device = next(self.model.parameters()).device
+        tensor_board = torch.tensor(numpy_board, dtype=torch.float32).unsqueeze(0).to(device) # Shape: (1, 13, 8, 8)
         
         self.model.eval()
         with torch.no_grad():
             policy_logits, value_tensor = self.model(tensor_board)
             
         v = value_tensor.item()
+        logits = policy_logits[0] # Shape: (4672,)
         
-        # Note: True AlphaZero masks illegal moves and applies softmax.
-        # For now, we simulate the dictionary mapping of legal moves -> probabilities.
-        policy_dict = {}
-        for move in board.legal_moves:
-            # We will wire up the true action-space mapping here later.
-            # Right now, we fallback to uniform probability among legal moves for testing.
-            policy_dict[move] = 1.0 / board.legal_moves.count()
+        # We need the action encoder to map legal moves to their 4672 indices
+        from tabula.game.action_encoder import ActionEncoder
+        import torch.nn.functional as F
+        
+        encoder_4672 = ActionEncoder()
+        legal_moves = list(board.legal_moves)
+        
+        if not legal_moves:
+            return {}, v
+            
+        legal_indices = [encoder_4672.encode(m) for m in legal_moves]
+        
+        # Mask out illegal moves by setting their logits to negative infinity
+        mask = torch.full((4672,), float('-inf'), device=logits.device)
+        mask[legal_indices] = logits[legal_indices]
+        
+        # Apply Softmax to convert the raw logits into actual probabilities (summing to 1.0)
+        probs = F.softmax(mask, dim=0)
+        
+        # Map the probabilities back to the legal moves
+        policy_dict = {m: probs[encoder_4672.encode(m)].item() for m in legal_moves}
             
         return policy_dict, v
