@@ -23,15 +23,22 @@ class SelfPlayWorker:
         self.mcts = MCTS(self.model, num_simulations=num_simulations, c_puct=1.25)
         self.action_encoder = ActionEncoder()
         
-    def play_game(self):
+    def play_game(self, render=False, delay=0.5):
         """Plays a single game of AlphaZero vs AlphaZero and returns the training examples."""
         board = chess.Board()
         examples = [] # Will store temporary tuples of (board_tensor, pi_tensor, player_turn)
         
-        print("Starting new self-play game...")
+        if not render:
+            print("Starting new self-play game...")
         
         moves = 0
         while board.outcome(claim_draw=True) is None:
+            if render:
+                os.system('cls' if os.name == 'nt' else 'clear')
+                print(f"--- Tabula AI Self-Play (Move {moves}) ---")
+                print(board.unicode())
+                time.sleep(delay)
+
             # 1. Run MCTS to get the root node and visit counts
             root_node = self.mcts.search(board, encode_board)
             
@@ -61,7 +68,7 @@ class SelfPlayWorker:
             board.push(best_move)
             moves += 1
             
-            if moves % 10 == 0:
+            if not render and moves % 10 == 0:
                 print(f"Move {moves}... (Eval: {root_node.q_value:.2f})")
                 
             # Optional: Cap max moves to prevent infinite loops from totally random baby-AI weights
@@ -70,6 +77,12 @@ class SelfPlayWorker:
                 break
                 
         # 5. Game Over - Calculate Rewards (z)
+        if render:
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print(f"--- Tabula AI Self-Play (Game Over) ---")
+            print(board.unicode())
+            time.sleep(2.0)
+            
         outcome = board.outcome(claim_draw=True)
         if outcome is None or outcome.winner is None:
             reward = 0.0 # Draw (or artificially capped at 150 moves)
@@ -78,7 +91,17 @@ class SelfPlayWorker:
         else:
             reward = -1.0
             
-        print(f"Game over after {moves} moves. Reward for White: {reward}")
+        if not render:
+            print(f"Game over after {moves} moves. Reward for White: {reward}")
+        else:
+            print(f"\nGame over after {moves} moves.")
+            if reward == 1.0:
+                print("Result: WHITE WINS")
+            elif reward == -1.0:
+                print("Result: BLACK WINS")
+            else:
+                print("Result: DRAW")
+            time.sleep(2.0)
         
         # 6. Retroactively assign the final reward to all saved turns
         training_data = []
