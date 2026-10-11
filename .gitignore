@@ -12,6 +12,7 @@ checkpoints/*
 !checkpoints/.gitkeep
 runs/
 data/
+logs/
 
 *.pt
 *.pth

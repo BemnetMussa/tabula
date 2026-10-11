@@ -5,50 +5,57 @@ import torch
 from tabula.selfplay.worker import SelfPlayWorker
 from tabula.train.train import train
 from tabula.evaluate.arena import Arena
+from tabula.watch.live import LiveBoard
+from tabula.hardware.thermal import ThermalGuard
 
-def clear_screen():
-    os.system('cls' if os.name == 'nt' else 'clear')
+def get_next_iteration() -> int:
+    """Auto-detect next iteration number from existing files in data/."""
+    existing = []
+    if os.path.exists("data"):
+        for f in os.listdir("data"):
+            if f.startswith("selfplay_iter_") and f.endswith(".pt"):
+                try:
+                    parts = f.split("_")
+                    existing.append(int(parts[2]))
+                except (IndexError, ValueError):
+                    pass
+    return (max(existing) + 1) if existing else 1
 
 def main():
-    clear_screen()
-    print("==========================================")
-    print("      TABULA AI AUTONOMOUS PIPELINE       ")
-    print("==========================================")
-    print("\nStarting in 3 seconds...")
-    time.sleep(3)
-    
     champ_path = "models/tabula_v1_champion.pth"
     chall_path = "models/tabula_v1_latest.pth"
     
-    iteration = 1
+    live = LiveBoard(enable_tui=True)
+    thermal = ThermalGuard(warm_threshold=72.0, emergency_threshold=80.0, target_cool_temp=62.0, cooldown_sleep_sec=2.0)
+    iteration = get_next_iteration()
     
     # We loop forever, generating data, training, and evaluating
     while True:
-        clear_screen()
-        print(f"======================================")
-        print(f"       ITERATION {iteration}")
-        print(f"======================================")
+        # Pre-check thermals
+        thermal.check_and_cool()
         
         # ---------------------------------------------------------
         # PHASE 1: SELF PLAY (Generate Data)
         # ---------------------------------------------------------
-        print("\n[PHASE 1] Generating Self-Play Data...")
-        # Use Champion to generate data. If no champion exists, worker uses random weights.
-        worker = SelfPlayWorker(model_path=champ_path, num_simulations=40)
+        print(f"\n[PHASE 1] Generating Self-Play Data (Iteration {iteration})...")
+        # The latest network is the one whose value head is alive. The champion
+        # stays the bar for the match and is not the player until it earns the games.
+        latest_exists = os.path.exists(chall_path)
+        play_path = chall_path if latest_exists else champ_path
+        live.begin_round(iteration, latest_exists)
+        worker = SelfPlayWorker(model_path=play_path, num_simulations=40)
         
         # We generate a few games per iteration to keep it fast for laptops
         num_games = 5
         all_data = []
         
         for g in range(num_games):
-            # Render the VERY FIRST game of every iteration so the user can watch the AI learn!
-            render_game = (g == 0)
-            
-            data = worker.play_game(render=render_game, delay=0.5)
+            thermal.check_and_cool()
+            # The first game of each iteration is the one on the board.
+            data = worker.play_game(live=live if g == 0 else None, hold=0.03 if g == 0 else 0.0)
             all_data.extend(data)
-            
-            if not render_game:
-                print(f"Completed game {g+1}/{num_games}")
+            print(f"Completed game {g+1}/{num_games}")
+            thermal.rest(2.0) # 2s breather to dissipate heat between games
                 
         # Save the dataset
         os.makedirs("data", exist_ok=True)
@@ -59,19 +66,20 @@ def main():
         # ---------------------------------------------------------
         # PHASE 2: TRAIN (Update Neural Network)
         # ---------------------------------------------------------
-        clear_screen()
+        thermal.check_and_cool()
         print(f"======================================")
         print(f"       ITERATION {iteration} - TRAINING")
         print(f"======================================")
         
         # Train function automatically loads all .pt files in data/
         # and saves the output to models/tabula_v1_latest.pth
-        train()
+        train(live=live)
+        thermal.rest(3.0) # 3s breather after backpropagation
         
         # ---------------------------------------------------------
         # PHASE 3: EVALUATE (Arena Gating)
         # ---------------------------------------------------------
-        clear_screen()
+        thermal.check_and_cool()
         print(f"======================================")
         print(f"       ITERATION {iteration} - ARENA")
         print(f"======================================")
@@ -81,14 +89,29 @@ def main():
             print("No champion found. Promoting the first trained network to Champion!")
             import shutil
             shutil.copy(chall_path, champ_path)
+            live.note_match(1.0, 0, True, first=True)
         else:
             arena = Arena(champion_path=champ_path, challenger_path=chall_path, num_simulations=20)
-            # Pit them against each other for 4 games
-            arena.evaluate(num_games=4, win_threshold=0.55)
+            # Ten games, so one repeated draw cannot decide the 55% bar.
+            promoted = arena.evaluate(num_games=10, win_threshold=0.55, live=live, hold=0.02)
+            live.note_match(
+                arena.last_win_rate,
+                arena.last_games,
+                promoted,
+                ch_wins=arena.challenger_wins,
+                ch_losses=arena.champion_wins,
+                draws=arena.draws
+            )
             
-        print(f"\nIteration {iteration} complete. Sleeping 5 seconds before next cycle...")
-        time.sleep(5)
+        print(f"\nIteration {iteration} complete. Cooling down 10 seconds before next cycle...")
+        thermal.rest(10.0)
+        thermal.check_and_cool()
         iteration += 1
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        import sys
+        sys.stdout.write("\033[?25h\n\n[Tabula AI] Pipeline paused cleanly by user.\n")
+        sys.stdout.flush()

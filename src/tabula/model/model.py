@@ -62,17 +62,18 @@ class TabulaNet(nn.Module):
             # Note: We don't apply Softmax here; we use CrossEntropyLoss later which expects raw logits.
         )
         
-        # VALUE HEAD: \"Who is winning?\"
-        # Shrinks to 1 filter, flattens, passes through a dense layer, then outputs a number [-1, 1]
+        # VALUE HEAD: how good is this position for the side about to move?
+        # A hard ReLU here died completely after a run of all-draw labels, and a dead
+        # unit never gets a gradient again. The leak keeps that from being permanent.
         self.value_head = nn.Sequential(
             nn.Conv2d(num_hidden, 1, kernel_size=1, bias=False),
             nn.BatchNorm2d(1),
-            nn.ReLU(),
+            nn.LeakyReLU(0.01),
             nn.Flatten(),
             nn.Linear(1 * 8 * 8, 256),
-            nn.ReLU(),
+            nn.LeakyReLU(0.01),
             nn.Linear(256, 1),
-            nn.Tanh() # Squeezes the output between -1 (Black winning) and +1 (White winning)
+            nn.Tanh()
         )
 
     def forward(self, x):

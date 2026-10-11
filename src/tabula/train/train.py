@@ -8,33 +8,43 @@ from torch.utils.data import Dataset, DataLoader
 
 from tabula.model.model import TabulaNet
 
+import numpy as np
+
 class SelfPlayDataset(Dataset):
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, max_files=25):
         """
-        Loads all self-play .pt files from the data directory.
-        Each file contains a list of tuples: (state_tensor, pi_tensor, z_tensor).
+        Loads the most recent self-play .pt files (sliding replay buffer).
+        Pre-vectorizes data into contiguous tensors to eliminate Python per-item overhead.
         """
-        self.examples = []
-        pt_files = glob.glob(os.path.join(data_dir, "*.pt"))
-        for f in pt_files:
+        pt_files = sorted(glob.glob(os.path.join(data_dir, "*.pt")), key=os.path.getmtime)
+        selected_files = pt_files[-max_files:] if len(pt_files) > max_files else pt_files
+        
+        all_states, all_pis, all_zs = [], [], []
+        for f in selected_files:
             data = torch.load(f, weights_only=False)
-            self.examples.extend(data)
+            for s, pi, z in data:
+                all_states.append(s)
+                all_pis.append(pi)
+                all_zs.append(z)
+                
+        if all_states:
+            self.states = torch.from_numpy(np.array(all_states, dtype=np.float32))
+            self.pis = torch.from_numpy(np.array(all_pis, dtype=np.float32))
+            self.zs = torch.from_numpy(np.array(all_zs, dtype=np.float32))
+        else:
+            self.states = torch.empty((0, 13, 8, 8), dtype=torch.float32)
+            self.pis = torch.empty((0, 4672), dtype=torch.float32)
+            self.zs = torch.empty((0, 1), dtype=torch.float32)
             
-        print(f"Loaded {len(self.examples)} examples from {len(pt_files)} files.")
+        print(f"Loaded {len(self.states)} examples from {len(selected_files)} recent files (Replay buffer window).")
 
     def __len__(self):
-        return len(self.examples)
+        return len(self.states)
 
     def __getitem__(self, idx):
-        s, pi, z = self.examples[idx]
-        # Convert numpy arrays to PyTorch tensors
-        return (
-            torch.tensor(s, dtype=torch.float32),
-            torch.tensor(pi, dtype=torch.float32),
-            torch.tensor(z, dtype=torch.float32)
-        )
+        return self.states[idx], self.pis[idx], self.zs[idx]
 
-def train():
+def train(live=None):
     print("=== Tabula AI - AlphaZero Training Loop ===")
     
     # --- Configuration ---
@@ -53,12 +63,18 @@ def train():
     
     # 1. Load Data
     print("\n--- 1. Loading Self-Play Data ---")
-    dataset = SelfPlayDataset(data_dir)
+    dataset = SelfPlayDataset(data_dir, max_files=25)
     if len(dataset) == 0:
         print("No training data found. Run self-play first (python -m tabula.selfplay.worker).")
         return
         
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
+    dataloader = DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=True, 
+        drop_last=False,
+        pin_memory=(device.type == "cuda")
+    )
     
     # 2. Initialize Model
     print("\n--- 2. Initializing Neural Network ---")
@@ -91,8 +107,10 @@ def train():
         start_time = time.time()
         
         for batch_idx, (states, pis, zs) in enumerate(dataloader):
-            # Move data to GPU if available
-            states, pis, zs = states.to(device), pis.to(device), zs.to(device)
+            # Move data to GPU asynchronously
+            states = states.to(device, non_blocking=True)
+            pis = pis.to(device, non_blocking=True)
+            zs = zs.to(device, non_blocking=True)
             
             optimizer.zero_grad()
             
@@ -121,6 +139,8 @@ def train():
         
         elapsed = time.time() - start_time
         print(f"Epoch {epoch+1:02d}/{epochs} [{elapsed:.1f}s] - Total Loss: {avg_total_loss:.4f} (Policy: {avg_p_loss:.4f}, Value: {avg_v_loss:.4f})")
+        if live is not None:
+            live.show_training(epoch + 1, epochs, avg_total_loss, avg_p_loss, avg_v_loss)
         
     # 5. Save the trained model
     print("\n--- 4. Saving Model ---")

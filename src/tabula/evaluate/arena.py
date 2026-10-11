@@ -5,6 +5,16 @@ import torch
 from tabula.model.model import TabulaNet
 from tabula.mcts.search import MCTS
 from tabula.game.encoder import encode_board
+from tabula.game.score import ADJUDICATE_LEAD, ADJUDICATE_PLIES, material_white, score_game
+
+# 5 diverse opening pairs used for fair paired-tournament play (TCEC/CCC standard)
+OPENING_SUITE = [
+    ["e2e4", "e7e5"],       # Open Game (1. e4 e5)
+    ["d2d4", "d7d5"],       # Closed Game (1. d4 d5)
+    ["c2c4", "e7e5"],       # English Opening (1. c4 e5)
+    ["g1f3", "d7d5"],       # Reti Opening (1. Nf3 d5)
+    ["e2e4", "c7c5"],       # Sicilian Defense (1. e4 c5)
+]
 
 class Arena:
     def __init__(self, champion_path, challenger_path, num_simulations=40):
@@ -33,10 +43,20 @@ class Arena:
         
         self.champion_path = champion_path
 
-    def play_game(self, challenger_is_white):
-        """Plays a single game between Champion and Challenger."""
+    def play_game(self, challenger_is_white, live=None, hold=0.0, arena_info=None, opening_moves=None):
+        """Plays a single tournament game between Champion and Challenger."""
         board = chess.Board()
-        moves = 0
+        last_move = None
+        if opening_moves:
+            for uci in opening_moves:
+                mv = chess.Move.from_uci(uci)
+                if mv in board.legal_moves:
+                    board.push(mv)
+                    last_move = mv
+
+        moves = len(board.move_stack)
+        stop = None
+        lead_run = 0
         
         # Assign colors
         white_mcts = self.chall_mcts if challenger_is_white else self.champ_mcts
@@ -46,8 +66,8 @@ class Arena:
             # Determine whose turn it is
             current_mcts = white_mcts if board.turn == chess.WHITE else black_mcts
             
-            # Search the tree
-            root_node = current_mcts.search(board, encode_board)
+            # Search the tree. No Dirichlet noise: evaluation stays greedy.
+            root_node = current_mcts.search(board, encode_board, add_noise=False)
             
             # Deterministic move selection (Argmax) for tournament play
             best_move = None
@@ -57,55 +77,120 @@ class Arena:
                 if child.visit_count > best_visits:
                     best_visits = child.visit_count
                     best_move = move
-                    
+
+            if live is not None:
+                color = "White" if challenger_is_white else "Black"
+                live.show_arena(
+                    headline=f"Arena · challenger as {color} · ply {moves}",
+                    board=board,
+                    root=root_node,
+                    ply=moves,
+                    last_move=last_move,
+                    result=None,
+                    score_line=None,
+                    arena_info=arena_info,
+                )
+                if hold:
+                    time.sleep(hold)
+
             board.push(best_move)
+            last_move = best_move
             moves += 1
-            
+
+            if abs(material_white(board)) >= ADJUDICATE_LEAD:
+                lead_run += 1
+            else:
+                lead_run = 0
+            if lead_run >= ADJUDICATE_PLIES:
+                stop = "MATERIAL"
+                break
+
             # Cap moves to prevent infinite loops from bad networks
             if moves > 150:
+                stop = "MOVE_LIMIT"
                 break
-                
-        # Determine outcome
-        outcome = board.outcome(claim_draw=True)
-        if outcome is None or outcome.winner is None:
-            return 0.5  # Draw
-            
-        # If challenger is white and white won, or challenger is black and black won -> Challenger gets 1
-        if (challenger_is_white and outcome.winner == chess.WHITE) or \
-           (not challenger_is_white and outcome.winner == chess.BLACK):
-            return 1.0  # Challenger win
-        else:
-            return 0.0  # Champion win
 
-    def evaluate(self, num_games=10, win_threshold=0.55):
+        # Mate is a full point. A rules draw is half. A game we cut off is scored
+        # from the material, so a queen-up challenger is not recorded as a draw.
+        outcome = board.outcome(claim_draw=True)
+        white_reward, result, termination = score_game(board, outcome, stop)
+        self.last_result = f"{result} ({termination}) white {white_reward:+.2f}"
+        if live is not None:
+            winner = "WHITE" if white_reward > 0.05 else ("BLACK" if white_reward < -0.05 else "DRAW")
+            live.record_game_outcome("arena", winner, termination, moves)
+            live.show_arena(
+                headline=f"{result} · {termination.replace('_', ' ').lower()} · {moves} plies",
+                board=board,
+                root=None,
+                ply=moves,
+                last_move=last_move,
+                result=result,
+                score_line=self.last_result,
+                arena_info=arena_info,
+            )
+            if hold:
+                time.sleep(max(hold, 1.0))
+        if challenger_is_white:
+            return (white_reward + 1.0) / 2.0
+        return (1.0 - white_reward) / 2.0
+
+    def evaluate(self, num_games=10, win_threshold=0.55, live=None, hold=0.0):
         """
         Plays a tournament. If Challenger scores > win_threshold (e.g. 55%), 
         it becomes the new Champion.
         """
         print(f"\n--- TOURNAMENT: Challenger vs Champion ({num_games} games) ---")
         challenger_score = 0.0
+        challenger_wins = 0
+        champion_wins = 0
+        draws = 0
         
         for i in range(num_games):
             start_time = time.time()
+            # Paired openings: Game 0 & 1 share opening 0, Game 2 & 3 share opening 1, etc.
+            op_idx = (i // 2) % len(OPENING_SUITE)
+            opening = OPENING_SUITE[op_idx]
+
             # Alternate colors: Game 0 (Challenger=White), Game 1 (Challenger=Black)
             challenger_is_white = (i % 2 == 0)
             color_str = "White" if challenger_is_white else "Black"
             
-            result = self.play_game(challenger_is_white)
+            arena_info = {
+                "game": i + 1,
+                "totalGames": num_games,
+                "challengerIsWhite": challenger_is_white,
+                "challengerScore": challenger_score,
+                "challengerWins": challenger_wins,
+                "championWins": champion_wins,
+                "draws": draws,
+                "winThreshold": win_threshold
+            }
+            result = self.play_game(
+                challenger_is_white,
+                live=live,
+                hold=hold if i == 0 else 0.0,
+                arena_info=arena_info,
+                opening_moves=opening
+            )
             challenger_score += result
+            if result > 0.5:
+                challenger_wins += 1
+            elif result < 0.5:
+                champion_wins += 1
+            else:
+                draws += 1
             
             elapsed = time.time() - start_time
-            if result == 1.0:
-                res_str = "Challenger WON"
-            elif result == 0.0:
-                res_str = "Champion WON"
-            else:
-                res_str = "DRAW"
-                
-            print(f"Game {i+1}/{num_games} | Challenger as {color_str} | Result: {res_str} | Time: {elapsed:.1f}s")
+            detail = getattr(self, "last_result", "")
+            print(f"Game {i+1}/{num_games} | Challenger as {color_str} | Score: {result:.2f} | {detail} | Time: {elapsed:.1f}s")
             
         win_rate = challenger_score / num_games
-        print(f"\nFinal Score: Challenger {challenger_score}/{num_games} (Win Rate: {win_rate*100:.1f}%)")
+        self.last_win_rate = win_rate
+        self.last_games = num_games
+        self.challenger_wins = challenger_wins
+        self.champion_wins = champion_wins
+        self.draws = draws
+        print(f"\nFinal Score: Challenger {challenger_score}/{num_games} (Win Rate: {win_rate*100:.1f}%) | Record: {challenger_wins}W - {draws}D - {champion_wins}L")
         
         if win_rate >= win_threshold:
             print("GATING PASSED: Challenger is strictly better!")

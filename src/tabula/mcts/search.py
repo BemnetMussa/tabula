@@ -1,6 +1,21 @@
 import math
+import numpy as np
 import torch
 import chess
+
+def terminal_value(board):
+    """Value for the side to move, or None if the game is still going.
+
+    A draw the rules will claim (repetition, the 50-move rule) is 0.
+    Checkmate is -1 for the side that has to move.
+    """
+    outcome = board.outcome(claim_draw=True)
+    if outcome is None:
+        return None
+    if outcome.winner is None:
+        return 0.0
+    return 1.0 if outcome.winner == board.turn else -1.0
+
 
 class Node:
     """
@@ -43,16 +58,22 @@ class MCTS:
         self.num_simulations = num_simulations
         self.c_puct = c_puct  # Hyperparameter controlling exploration
 
-    def search(self, board, encoder):
+    def search(self, board, encoder, add_noise=False, dirichlet_alpha=0.3, noise_fraction=0.25):
         """
         Run the simulations to build the tree and return the root node.
         We can then pick the best move based on the visit counts of the root's children.
+
+        add_noise is for self-play only. AlphaZero mixes Dirichlet noise into the
+        root prior so the search sometimes tries moves the network currently ignores.
+        Arena games and human play leave it off.
         """
         root = Node(prior_prob=1.0)
         
         # 0. Initial Expansion
         policy_dict, _ = self.predict(board, encoder)
         root.expand(policy_dict)
+        if add_noise and root.children:
+            self._add_dirichlet(root, dirichlet_alpha, noise_fraction)
 
         for _ in range(self.num_simulations):
             node = root
@@ -65,14 +86,10 @@ class MCTS:
                 search_board.push(move)
                 
             # 2. EXPAND & EVALUATE
-            outcome = search_board.outcome()
-            if outcome is not None:
-                # Terminal state (Game Over) - no need for the Neural Net
-                if outcome.winner is None:
-                    value = 0.0  # Draw
-                else:
-                    value = 1.0 if outcome.winner == search_board.turn else -1.0
-            else:
+            # claim_draw matches the game loop. Without it, a threefold repetition
+            # is not over inside the tree, so the search walks into the draw.
+            value = terminal_value(search_board)
+            if value is None:
                 # Leaf node reached - Ask TabulaNet for P (Policy) and V (Value)
                 policy_dict, value = self.predict(search_board, encoder)
                 node.expand(policy_dict)
@@ -82,6 +99,13 @@ class MCTS:
             self.backpropagate(node, value)
             
         return root
+
+    def _add_dirichlet(self, root: Node, alpha: float, fraction: float):
+        """P(root, a) = (1 - ε) p_a + ε η_a, with η ~ Dir(α) and ε = 0.25 for chess."""
+        children = list(root.children.values())
+        noise = np.random.dirichlet([alpha] * len(children))
+        for child, eta in zip(children, noise):
+            child.prior_prob = child.prior_prob * (1.0 - fraction) + float(eta) * fraction
 
     def select_child(self, node: Node):
         """Pick the child with the highest PUCT score."""
@@ -100,10 +124,13 @@ class MCTS:
 
     def puct_score(self, parent: Node, child: Node) -> float:
         """
-        AlphaZero PUCT Formula: 
+        AlphaZero PUCT:
         Exploitation (Q) + Exploration (c * P * sqrt(N_parent) / (1 + N_child))
+
+        The value stored on a node is for the player about to move there.
+        The parent wants the opposite, so Q is negated.
         """
-        q_val = child.q_value
+        q_val = -child.q_value
         exploration_term = self.c_puct * child.prior_prob * math.sqrt(parent.visit_count) / (1 + child.visit_count)
         return q_val + exploration_term
 
