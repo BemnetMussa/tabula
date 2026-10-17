@@ -337,18 +337,27 @@ class TabulaTUI:
         lines.append(f" {FG_MUTED}────────────────────────────────────────────────────────────────────────────{RESET}")
 
         # Section 3: Neural Network Loss Trajectory (lines 12-16)
-        loss_hist = stats.get("lossHistory", [])
+        # Show last train losses during self-play/arena too. Never print fake 0.0000
+        # when nothing has been trained yet — that was confusing vs live board Eval.
+        loss_hist = stats.get("lossHistory", []) or []
+        last_loss = state.get("loss") or (loss_hist[-1] if loss_hist else None)
         val_losses = [h.get("value", 0.0) for h in loss_hist]
         pol_losses = [h.get("policy", 0.0) for h in loss_hist]
-        last_val = val_losses[-1] if val_losses else 0.0
-        last_pol = pol_losses[-1] if pol_losses else 0.0
+        if last_loss is not None:
+            last_val = float(last_loss.get("value", 0.0))
+            last_pol = float(last_loss.get("policy", 0.0))
+            val_str = f"{last_val:.4f}"
+            pol_str = f"{last_pol:.4f}"
+        else:
+            val_str = "—"
+            pol_str = "—"
 
         val_spark = render_braille_sparkline(val_losses, width=18)
         pol_spark = render_braille_sparkline(pol_losses, width=18)
 
         lines.append(f" {BOLD}NEURAL NETWORK TRAINING LOSS TRAJECTORY{RESET}")
-        lines.append(f"   Value Loss  : {FG_CYAN}{last_val:.4f}{RESET}  [{val_spark}]  (MSE on win/loss evaluation)")
-        lines.append(f"   Policy Loss : {FG_PURPLE}{last_pol:.4f}{RESET}  [{pol_spark}]  (Cross-entropy on move policy)")
+        lines.append(f"   Value Loss  : {FG_CYAN}{val_str}{RESET}  [{val_spark}]  (MSE on win/loss evaluation)")
+        lines.append(f"   Policy Loss : {FG_PURPLE}{pol_str}{RESET}  [{pol_spark}]  (Cross-entropy on move policy)")
         lines.append(f"   Buffer Window: 25 recent files (~7,500 moves, sliding replay buffer)")
         lines.append(f" {FG_MUTED}────────────────────────────────────────────────────────────────────────────{RESET}")
 
