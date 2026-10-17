@@ -7,13 +7,19 @@ from tabula.mcts.search import MCTS
 from tabula.game.encoder import encode_board
 from tabula.game.score import ADJUDICATE_LEAD, ADJUDICATE_PLIES, material_white, score_game
 
-# 5 diverse opening pairs used for fair paired-tournament play (TCEC/CCC standard)
+# 10 openings × 2 colors = 20 unique paired games (matches pipeline num_games=20).
+# With only 5 openings, games 11–20 were deterministic clones of games 1–10.
 OPENING_SUITE = [
     ["e2e4", "e7e5"],       # Open Game (1. e4 e5)
-    ["d2d4", "d7d5"],       # Closed Game (1. d4 d5)
-    ["c2c4", "e7e5"],       # English Opening (1. c4 e5)
-    ["g1f3", "d7d5"],       # Reti Opening (1. Nf3 d5)
-    ["e2e4", "c7c5"],       # Sicilian Defense (1. e4 c5)
+    ["d2d4", "d7d5"],       # Queen's Gambit / closed (1. d4 d5)
+    ["c2c4", "e7e5"],       # English (1. c4 e5)
+    ["g1f3", "d7d5"],       # Reti (1. Nf3 d5)
+    ["e2e4", "c7c5"],       # Sicilian (1. e4 c5)
+    ["e2e4", "e7e6"],       # French (1. e4 e6)
+    ["e2e4", "c7c6"],       # Caro-Kann (1. e4 c6)
+    ["d2d4", "g8f6"],       # Indian Defence (1. d4 Nf6)
+    ["c2c4", "c7c5"],       # Symmetrical English (1. c4 c5)
+    ["g1f3", "g8f6"],       # Reti / flexible (1. Nf3 Nf6)
 ]
 
 class Arena:
@@ -139,7 +145,14 @@ class Arena:
         Plays a tournament. If Challenger scores > win_threshold (e.g. 55%), 
         it becomes the new Champion.
         """
+        unique_pairs = 2 * len(OPENING_SUITE)
         print(f"\n--- TOURNAMENT: Challenger vs Champion ({num_games} games) ---")
+        print(f"Opening suite: {len(OPENING_SUITE)} lines → {unique_pairs} unique color-paired games before any repeat")
+        if num_games > unique_pairs:
+            print(
+                f"WARNING: num_games={num_games} > {unique_pairs}; "
+                "later games will recycle openings (clone risk)."
+            )
         challenger_score = 0.0
         challenger_wins = 0
         champion_wins = 0
@@ -150,6 +163,7 @@ class Arena:
             # Paired openings: Game 0 & 1 share opening 0, Game 2 & 3 share opening 1, etc.
             op_idx = (i // 2) % len(OPENING_SUITE)
             opening = OPENING_SUITE[op_idx]
+            opening_label = " ".join(opening)
 
             # Alternate colors: Game 0 (Challenger=White), Game 1 (Challenger=Black)
             challenger_is_white = (i % 2 == 0)
@@ -182,7 +196,11 @@ class Arena:
             
             elapsed = time.time() - start_time
             detail = getattr(self, "last_result", "")
-            print(f"Game {i+1}/{num_games} | Challenger as {color_str} | Score: {result:.2f} | {detail} | Time: {elapsed:.1f}s")
+            print(
+                f"Game {i+1}/{num_games} | Challenger as {color_str} | "
+                f"Opening {op_idx+1}/{len(OPENING_SUITE)} [{opening_label}] | "
+                f"Score: {result:.2f} | {detail} | Time: {elapsed:.1f}s"
+            )
             
         win_rate = challenger_score / num_games
         self.last_win_rate = win_rate
@@ -214,6 +232,6 @@ if __name__ == "__main__":
         os.makedirs("models", exist_ok=True)
         shutil.copy(chall_file, champ_file)
         
-    arena = Arena(champion_path=champ_file, challenger_path=chall_file, num_simulations=20)
-    # Play a quick 4-game tournament for testing
+    # Manual smoke test — lighter than the pipeline gate (80 sims / 20 games).
+    arena = Arena(champion_path=champ_file, challenger_path=chall_file, num_simulations=40)
     arena.evaluate(num_games=4, win_threshold=0.55)

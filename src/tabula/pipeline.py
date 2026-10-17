@@ -91,9 +91,10 @@ def main():
             shutil.copy(chall_path, champ_path)
             live.note_match(1.0, 0, True, first=True)
         else:
-            arena = Arena(champion_path=champ_path, challenger_path=chall_path, num_simulations=20)
-            # Ten games, so one repeated draw cannot decide the 55% bar.
-            promoted = arena.evaluate(num_games=10, win_threshold=0.55, live=live, hold=0.02)
+            # Phase 1 eval harden: exam must be at least as deep as self-play (40),
+            # and long enough that 55% is not a 10-game coin flip. Keep paired openings.
+            arena = Arena(champion_path=champ_path, challenger_path=chall_path, num_simulations=80)
+            promoted = arena.evaluate(num_games=20, win_threshold=0.55, live=live, hold=0.02)
             live.note_match(
                 arena.last_win_rate,
                 arena.last_games,
